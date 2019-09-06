@@ -35,10 +35,17 @@ void err_if_(bool err, const char * message, const char * file, size_t line) {
     }
 }
 
+void err_if_extra(bool err, const char * message1, const char * message2, const char * file, size_t line) {
+    if (err) {
+        fprintf(stderr, "%s:%zu %s %s\n", file, line, message1, message2);
+        exit(-1);
+    }
+}
+
 #define NC_ERR(x) nc_err_(x, #x, __FILE__, __LINE__)
 void nc_err_(int err, const char * message, const char * file, size_t line) {
     const char * nc_str = nc_strerror(err);
-    err_if_(err != NC_NOERR, nc_str, file, line);
+    err_if_extra(err != NC_NOERR, message, nc_str, file, line);
 }
 
 #define H5_ERR(x) h5_err_(x, #x, __FILE__, __LINE__)
@@ -49,6 +56,15 @@ hid_t h5_err_(hid_t err, const char * message, const char * file, size_t line) {
     }
     return err;
 }
+
+#define Z_ERR(x) z_err_(x, #x, __FILE__, __LINE__)
+void z_err_(hid_t err, const char * message, const char * file, size_t line) {
+    err_if_extra(err == Z_BUF_ERROR, message, "Z_BUF_ERROR", file, line);
+    err_if_extra(err == Z_MEM_ERROR, message, "Z_MEM_ERROR", file, line);
+    err_if_extra(err == Z_STREAM_ERROR, message, "Z_STREAM_ERROR", file, line);
+    err_if_extra(err == Z_DATA_ERROR, message, "Z_DATA_ERROR", file, line);
+}
+
 
 
 void copy_dim(int dimid, int ncidin, int ncidout) {
@@ -114,7 +130,7 @@ void copy_var(int varid, int ncidin, int ncidout) {
     NC_ERR(nc_inq_var_chunking(ncidin, varid, &contiguous, chunksizes));
 
     NC_ERR(nc_def_var(ncidout, name, xtype, ndims, dimids, &varidout));
-    NC_ERR(nc_def_var_deflate(ncidout, varidout, shuffle, deflate, deflate_level));
+    NC_ERR(nc_def_var_deflate(ncidout, varidout, shuffle, deflate, 6));
     NC_ERR(nc_def_var_chunking(ncidout, varidout, contiguous, chunksizes));
 
     ERR_IF(varid != varidout);
@@ -158,6 +174,7 @@ void copy_structure(const char * pathin, const char * pathout) {
 }
 
 size_t recompress_chunk(void ** buffer, size_t * buffer_size, size_t read_size, void ** tmp_buffer, size_t * tmp_buffer_size, int level) {
+    // Uncompress buffer into tmp_buffer
     unsigned long destlen = *tmp_buffer_size;
     int err = uncompress(*tmp_buffer, &destlen, *buffer, read_size);
 
@@ -171,15 +188,18 @@ size_t recompress_chunk(void ** buffer, size_t * buffer_size, size_t read_size, 
 
         return recompress_chunk(buffer, buffer_size, read_size, tmp_buffer, tmp_buffer_size, level);
     }
-    ERR_IF(err != Z_OK);
+    Z_ERR(err);
 
-    unsigned long min_size = compressBound(destlen);
+    // Compress tmp_buffer back into buffer
+    size_t uncompressed_size = destlen;
+
+    size_t min_size = compressBound(uncompressed_size);
     if (*buffer_size < min_size) {
         *buffer_size = min_size;
         *buffer = realloc(*buffer, *buffer_size);
     }
     destlen = *buffer_size;
-    ERR_IF(compress2(*buffer, &destlen, *tmp_buffer, destlen, level) != Z_OK);
+    Z_ERR(compress2(*buffer, &destlen, *tmp_buffer, uncompressed_size, level));
 
     return destlen;
 }
